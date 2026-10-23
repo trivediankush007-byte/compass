@@ -1,0 +1,377 @@
+name: Build Compass APK
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Create project files
+        run: |
+          mkdir -p compass && cd compass
+          mkdir -p app/src/main/java/com/example/compass
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "Compass"
+          include(":app")
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          android.useAndroidX=true
+          EOF_FILE
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.compass"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.compass"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF_FILE
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.FLASHLIGHT" />
+              <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+              <application android:label="Compass" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          cat > app/src/main/java/com/example/compass/MainActivity.kt <<'EOF_FILE'
+          package com.example.compass
+
+          import android.app.Activity
+          import android.content.Context
+          import android.graphics.*
+          import android.hardware.*
+          import android.hardware.camera2.CameraManager
+          import android.os.Bundle
+          import android.view.*
+          import android.widget.*
+          import kotlin.math.*
+
+          // ====== Ring no rang badalva ahi lakho ======
+          val RING = Color.parseColor("#3B82F6")
+
+          class MainActivity : Activity(), SensorEventListener {
+              private lateinit var sm: SensorManager
+              private lateinit var content: FrameLayout
+              private lateinit var compassView: CompassView
+              private lateinit var levelView: LevelView
+              private val titles = listOf("Compass", "Tally counter", "Torch", "Surface level", "Ruler")
+              private var current = 0
+              private var heading = 0f
+              private val rot = FloatArray(9)
+              private var torchOn = false
+              private var count = 0
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  sm = getSystemService(SENSOR_SERVICE) as SensorManager
+                  window.statusBarColor = Color.parseColor("#121212")
+                  window.navigationBarColor = Color.parseColor("#121212")
+
+                  val root = FrameLayout(this)
+                  root.setBackgroundColor(Color.parseColor("#121212"))
+                  content = FrameLayout(this)
+                  root.addView(content, FrameLayout.LayoutParams(-1, -1))
+
+                  val menuBtn = TextView(this).apply {
+                      text = "\u2630"
+                      textSize = 30f
+                      setTextColor(Color.WHITE)
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                      setOnClickListener { showMenu(it) }
+                  }
+                  root.addView(menuBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+
+                  setContentView(root)
+                  show(0)
+              }
+
+              private fun showMenu(anchor: View) {
+                  val pm = PopupMenu(this, anchor)
+                  titles.forEachIndexed { i, t ->
+                      pm.menu.add(0, i, i, if (i == current) "\u2713 $t" else t)
+                  }
+                  pm.setOnMenuItemClickListener { item ->
+                      show(item.itemId)
+                      true
+                  }
+                  pm.show()
+              }
+
+              private fun show(i: Int) {
+                  current = i
+                  sm.unregisterListener(this)
+                  if (torchOn) setTorch(false)
+                  torchOn = false
+                  content.removeAllViews()
+
+                  val v: View = when (i) {
+                      0 -> {
+                          compassView = CompassView(this)
+                          sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
+                              sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                          }
+                          compassView
+                      }
+                      1 -> tallyView()
+                      2 -> torchView()
+                      3 -> {
+                          levelView = LevelView(this)
+                          sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+                              sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                          }
+                          levelView
+                      }
+                      else -> RulerView(this)
+                  }
+                  content.addView(v, FrameLayout.LayoutParams(-1, -1))
+              }
+
+              override fun onSensorChanged(e: SensorEvent) {
+                  if (e.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+                      SensorManager.getRotationMatrixFromVector(rot, e.values)
+                      val o = FloatArray(3)
+                      SensorManager.getOrientation(rot, o)
+                      heading = ((Math.toDegrees(o[0].toDouble()) + 360) % 360).toFloat()
+                      if (::compassView.isInitialized) compassView.setHeading(heading)
+                  } else if (e.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                      if (::levelView.isInitialized) levelView.setTilt(e.values[0], e.values[1])
+                  }
+              }
+
+              override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+
+              private fun column() = LinearLayout(this).apply {
+                  orientation = LinearLayout.VERTICAL
+                  gravity = Gravity.CENTER
+              }
+
+              // ---- Tally ----
+              private fun tallyView(): View {
+                  val col = column()
+                  val num = TextView(this).apply {
+                      text = count.toString()
+                      textSize = 120f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                  }
+                  val row = LinearLayout(this).apply { gravity = Gravity.CENTER }
+                  fun btn(label: String, act: () -> Unit) = Button(this).apply {
+                      text = label
+                      textSize = 24f
+                      setOnClickListener {
+                          act()
+                          num.text = count.toString()
+                      }
+                  }
+                  row.addView(btn("\u2212") { count-- })
+                  row.addView(btn("+") { count++ })
+                  row.addView(btn("Reset") { count = 0 })
+                  col.addView(num)
+                  col.addView(row)
+                  return col
+              }
+
+              // ---- Torch ----
+              private fun setTorch(on: Boolean) {
+                  try {
+                      val cm = getSystemService(CAMERA_SERVICE) as CameraManager
+                      cm.setTorchMode(cm.cameraIdList[0], on)
+                  } catch (e: Exception) {
+                      Toast.makeText(this, "Torch chalu nathi thati", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun torchView(): View {
+                  val col = column()
+                  val btn = Button(this).apply {
+                      text = "Torch ON"
+                      textSize = 22f
+                  }
+                  btn.setOnClickListener {
+                      torchOn = !torchOn
+                      setTorch(torchOn)
+                      btn.text = if (torchOn) "Torch OFF" else "Torch ON"
+                  }
+                  col.addView(btn)
+                  return col
+              }
+          }
+
+          fun cardinal(h: Float): String {
+              val names = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+              return names[((h + 22.5f) / 45f).toInt() % 8]
+          }
+
+          // ---- Compass dial ----
+          class CompassView(c: Context) : View(c) {
+              private var h = 0f
+              private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = RING; style = Paint.Style.STROKE; strokeWidth = 6f
+              }
+              private val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE; strokeWidth = 3f
+              }
+              private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE; textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD
+              }
+
+              fun setHeading(v: Float) {
+                  h = v
+                  invalidate()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val cx = width / 2f
+                  val cy = height * 0.42f
+                  val r = min(width, height) * 0.36f
+
+                  canvas.drawCircle(cx, cy, r, ring)
+
+                  canvas.save()
+                  canvas.rotate(-h, cx, cy)
+                  for (d in 0 until 360 step 2) {
+                      canvas.save()
+                      canvas.rotate(d.toFloat(), cx, cy)
+                      val len = if (d % 10 == 0) r * 0.12f else r * 0.06f
+                      canvas.drawLine(cx, cy - r + 12f, cx, cy - r + 12f + len, white)
+                      canvas.restore()
+                  }
+                  txt.textSize = r * 0.13f
+                  val labels = listOf(
+                      0 to "N", 90 to "E", 180 to "S", 270 to "W",
+                      30 to "30", 60 to "60", 120 to "120", 150 to "150",
+                      210 to "210", 240 to "240", 300 to "300", 330 to "330"
+                  )
+                  for ((deg, label) in labels) {
+                      canvas.save()
+                      canvas.rotate(deg.toFloat(), cx, cy)
+                      canvas.drawText(label, cx, cy - r + r * 0.32f, txt)
+                      canvas.restore()
+                  }
+                  canvas.restore()
+
+                  // upar no fixed pointer
+                  white.strokeWidth = 6f
+                  canvas.drawLine(cx, cy - r - 24f, cx, cy - r + 8f, white)
+                  white.strokeWidth = 3f
+
+                  // neeche digri ane disha
+                  txt.textSize = r * 0.22f
+                  canvas.drawText("${h.roundToInt() % 360}\u00B0  ${cardinal(h)}", cx, cy + r + r * 0.45f, txt)
+              }
+          }
+
+          // ---- Surface level ----
+          class LevelView(c: Context) : View(c) {
+              private var x = 0f
+              private var y = 0f
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+              fun setTilt(ax: Float, ay: Float) {
+                  x = ax
+                  y = ay
+                  invalidate()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val cx = width / 2f
+                  val cy = height / 2f
+                  val r = min(width, height) * 0.4f
+
+                  p.style = Paint.Style.FILL
+                  p.color = Color.parseColor("#3A3A3C")
+                  canvas.drawCircle(cx, cy, r, p)
+
+                  p.style = Paint.Style.STROKE
+                  p.strokeWidth = 6f
+                  p.color = RING
+                  canvas.drawCircle(cx, cy, r, p)
+
+                  p.strokeWidth = 3f
+                  p.color = Color.WHITE
+                  canvas.drawLine(cx - 60f, cy, cx + 60f, cy, p)
+                  canvas.drawLine(cx, cy - 60f, cx, cy + 60f, p)
+
+                  val max = r - 40f
+                  val bx = (x / 9.8f).coerceIn(-1f, 1f) * max
+                  val by = (-y / 9.8f).coerceIn(-1f, 1f) * max
+                  val level = abs(x) < 0.3f && abs(y) < 0.3f
+
+                  p.style = Paint.Style.FILL
+                  p.color = if (level) RING else Color.WHITE
+                  canvas.drawCircle(cx + bx, cy + by, 30f, p)
+              }
+          }
+
+          // ---- Ruler ----
+          class RulerView(c: Context) : View(c) {
+              override fun onDraw(canvas: Canvas) {
+                  val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      color = Color.WHITE; strokeWidth = 3f; textSize = 30f; textAlign = Paint.Align.CENTER
+                  }
+                  val pxPerCm = resources.displayMetrics.xdpi / 2.54f
+                  canvas.drawText("Ruler (cm)", width / 2f, 220f, p)
+                  canvas.translate(0f, 260f)
+                  var i = 0
+                  while (i * pxPerCm < width) {
+                      val x = i * pxPerCm
+                      val len = when {
+                          i % 10 == 0 -> 120f
+                          i % 5 == 0 -> 80f
+                          else -> 50f
+                      }
+                      canvas.drawLine(x, 0f, x, len, p)
+                      if (i > 0 && i % 5 == 0) canvas.drawText("$i", x, len + 40f, p)
+                      i++
+                  }
+              }
+          }
+          EOF_FILE
+      - name: Build
+        run: cd compass && gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-apk
+          path: compass/app/build/outputs/apk/debug/app-debug.apk
+c
