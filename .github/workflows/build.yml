@@ -15,8 +15,8 @@ jobs:
           gradle-version: 8.7
       - name: Create project files
         run: |
-          mkdir -p compass && cd compass
-          mkdir -p app/src/main/java/com/example/compass
+          mkdir -p compass/app/src/main/java/com/example/compass
+          cd compass
           cat > settings.gradle.kts <<'EOF_FILE'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -85,7 +85,6 @@ jobs:
           import android.widget.*
           import kotlin.math.*
 
-          // ====== Ring no rang badalva ahi lakho ======
           val RING = Color.parseColor("#3B82F6")
 
           class MainActivity : Activity(), SensorEventListener {
@@ -186,7 +185,6 @@ jobs:
                   gravity = Gravity.CENTER
               }
 
-              // ---- Tally ----
               private fun tallyView(): View {
                   val col = column()
                   val num = TextView(this).apply {
@@ -212,7 +210,6 @@ jobs:
                   return col
               }
 
-              // ---- Torch ----
               private fun setTorch(on: Boolean) {
                   try {
                       val cm = getSystemService(CAMERA_SERVICE) as CameraManager
@@ -243,17 +240,21 @@ jobs:
               return names[((h + 22.5f) / 45f).toInt() % 8]
           }
 
-          // ---- Compass dial ----
           class CompassView(c: Context) : View(c) {
               private var h = 0f
               private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  color = RING; style = Paint.Style.STROKE; strokeWidth = 6f
+                  color = RING
+                  style = Paint.Style.STROKE
+                  strokeWidth = 6f
               }
               private val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  color = Color.WHITE; strokeWidth = 3f
+                  color = Color.WHITE
+                  strokeWidth = 3f
               }
               private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  color = Color.WHITE; textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD
+                  color = Color.WHITE
+                  textAlign = Paint.Align.CENTER
+                  typeface = Typeface.DEFAULT_BOLD
               }
 
               fun setHeading(v: Float) {
@@ -291,18 +292,15 @@ jobs:
                   }
                   canvas.restore()
 
-                  // upar no fixed pointer
                   white.strokeWidth = 6f
                   canvas.drawLine(cx, cy - r - 24f, cx, cy - r + 8f, white)
                   white.strokeWidth = 3f
 
-                  // neeche digri ane disha
                   txt.textSize = r * 0.22f
                   canvas.drawText("${h.roundToInt() % 360}\u00B0  ${cardinal(h)}", cx, cy + r + r * 0.45f, txt)
               }
           }
 
-          // ---- Surface level ----
           class LevelView(c: Context) : View(c) {
               private var x = 0f
               private var y = 0f
@@ -336,41 +334,3 @@ jobs:
                   val max = r - 40f
                   val bx = (x / 9.8f).coerceIn(-1f, 1f) * max
                   val by = (-y / 9.8f).coerceIn(-1f, 1f) * max
-                  val level = abs(x) < 0.3f && abs(y) < 0.3f
-
-                  p.style = Paint.Style.FILL
-                  p.color = if (level) RING else Color.WHITE
-                  canvas.drawCircle(cx + bx, cy + by, 30f, p)
-              }
-          }
-
-          // ---- Ruler ----
-          class RulerView(c: Context) : View(c) {
-              override fun onDraw(canvas: Canvas) {
-                  val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                      color = Color.WHITE; strokeWidth = 3f; textSize = 30f; textAlign = Paint.Align.CENTER
-                  }
-                  val pxPerCm = resources.displayMetrics.xdpi / 2.54f
-                  canvas.drawText("Ruler (cm)", width / 2f, 220f, p)
-                  canvas.translate(0f, 260f)
-                  var i = 0
-                  while (i * pxPerCm < width) {
-                      val x = i * pxPerCm
-                      val len = when {
-                          i % 10 == 0 -> 120f
-                          i % 5 == 0 -> 80f
-                          else -> 50f
-                      }
-                      canvas.drawLine(x, 0f, x, len, p)
-                      if (i > 0 && i % 5 == 0) canvas.drawText("$i", x, len + 40f, p)
-                      i++
-                  }
-              }
-          }
-          EOF_FILE
-      - name: Build
-        run: cd compass && gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: compass-apk
-          path: compass/app/build/outputs/apk/debug/app-debug.apk
