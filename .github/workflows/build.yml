@@ -374,4 +374,3 @@ jobs:
         with:
           name: compass-apk
           path: compass/app/build/outputs/apk/debug/app-debug.apk
-c
